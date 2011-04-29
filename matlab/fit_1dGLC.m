@@ -36,6 +36,6 @@ options = optimset(...
     'TolFun', .001');      % Termination tolerance on f    
 
 % Search!
-out_params, neglikelihood = fmincon('negloglike_1dGLC',start_params,[],[],[],[],vlb,vub,[],options,data,z_limit);
+[out_params, neglikelihood] = fmincon('negloglike_1dGLC',start_params,[],[],[],[],vlb,vub,[],options,data,z_limit);
 
 

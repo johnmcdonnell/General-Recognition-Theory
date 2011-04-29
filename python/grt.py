@@ -70,7 +70,6 @@ def fisherdiscrim( subjdata ):
         blength = len( bindices )
     meana = np.mean( subjdata[aindices, 0:-1], 0 )
     meanb = np.mean( subjdata[bindices, 0:-1], 0 )
-    # WARNING: transpose required, worried about misalignments.
     ka = np.cov( subjdata[aindices, 0:-1].T )
     kb = np.cov( subjdata[bindices, 0:-1].T )
     kpooled = ((alength-1)*ka + (blength-1)*kb) / (alength+blength-2)
@@ -92,7 +91,7 @@ def negloglike_glc( params, data, z_limit ):
     z_coefs /= params[0]
     
     # Compute z-scores for data
-    zscores = np.multiply( np.matrix(data[:,:-1]), z_coefs )
+    zscores = np.inner( np.matrix(data[:,:-1]), z_coefs )
     
     # Truncate extreme z-scores
     for i, score in enumerate( xrange(len(zscores)) ):
@@ -101,19 +100,20 @@ def negloglike_glc( params, data, z_limit ):
         if score > z_limit:
             zscores[i] = z_limit
     
-    aindices = [ i for i in range(len(data)) if data[i,-1] == 0 ]
+    aindices = [ i for i in range(len(data)) if data[i,-1] == 1 ]
     bindices = [ i for i in range(len(data)) if data[i,-1] != 1 ]
     
-    log_a_probs = np.log( 1 - stat.norm.cdf( zscores[aindices] ) )
+    log_a_probs = np.log( 1-stat.norm.cdf( zscores[aindices] ) )
     log_b_probs = np.log( stat.norm.cdf( zscores[bindices] ) )
     
-    return -(np.sum(log_a_probs)+np.sum(log_b_probs))
+    negloglike = -(np.sum(log_a_probs)+np.sum(log_b_probs))
+    return negloglike
 
 def fit_GLC( subjdata, inparams, z_limit=7 ):
-    thisdata = np.column_stack( [ subjdata[:,:-1], np.ones(len(subjdata)),
+    thesedata = np.column_stack( [ subjdata[:,:-1], np.ones(len(subjdata)),
                                  subjdata[:,-1] ] )
     
-    xopt, fopt, iter, funcalls, warnflag = optimize.fmin( negloglike_glc, inparams, (thisdata, z_limit), xtol=.001, full_output=True)
+    xopt, fopt, iter, funcalls, warnflag = optimize.fmin( negloglike_glc, inparams, (thesedata, z_limit), xtol=.001, full_output=True)
     return xopt, fopt
 
 def norm_old_params(oldparams):
@@ -128,7 +128,7 @@ class modelfit:
         self.data = np.array( subjdata )
         self.n = len( self.data )
         self.r = r
-        self.negloglike = None
+        self.negloglike = 9999999
         self.aic = None
         self.bic = None
     
@@ -139,89 +139,77 @@ class modelfit:
         pass
     
     def calcaic( self ):
-        if not self.negloglike:
-            self.calcnegloglike()
         self.aic = aic( self.negloglike, self.r )
         return self.aic 
     
     def calcbic( self ):
-        if not self.negloglike:
-            self.calcnegloglike()
         self.bic = bic( self.negloglike, self.r, self.n )
         return self.bic 
     
     def getnegloglike( self ):
-        if self.negloglike:
-            return self.negloglike
-        else:
-            return self.calcnegloglike()
+        return self.negloglike
     
     def getaic( self ):
-        if self.negloglike:
-            return self.negloglike
-        else:
+        if not self.aic:
             return self.calcaic()
+        else:
+            return self.aic
     
     def getbic( self ):
-        if self.negloglike:
-            return self.negloglike
-        else:
+        if not self.bic:
             return self.calcbic()
+        else:
+            return self.bic
 
 class nullmodel( modelfit ):
     def __init__( self, subjdata ):
         modelfit.__init__( self, subjdata, 0 )
+        self.calcnegloglike()
     
     def calcnegloglike ( self ):
-        if self.negloglike:
-            return self.negloglike
-        else:
-            self.negloglike = -np.log( .5 ) * self.n
-            self.params = {}
-            return self.negloglike
+        self.negloglike = -np.log( .5 ) * self.n
+        self.params = {}
 
 class interceptmodel( modelfit ):
     def __init__( self, subjdata ):
         modelfit.__init__( self, subjdata, 1 )
+        self.calcnegloglike()
     
     def calcnegloglike( self ):
-        if self.negloglike:
-            return self.negloglike
-        else:
-            numa = np.sum( self.data[:,-1] )
-            numb = self.n - numa
-            proba = float(numa) / self.n
-            self.negloglike = -(np.log(proba) * numa + np.log(1-proba) * numb)
-            self.params = dict( proba=proba)
-            return self.negloglike
+        numa = np.sum( self.data[:,-1] )
+        numb = self.n - numa
+        proba = float(numa) / self.n
+        self.negloglike = -(np.log(proba) * numa + np.log(1-proba) * numb)
+        self.params = dict( proba=proba)
 
 class onedfit( modelfit ):
+    """
+    Fits the data with a 1-dimensional GRT model.
+    """
     def __init__( self, subjdata, r=None ):
         modelfit.__init__( self, subjdata, 2 )
+        self.calcnegloglike()
     
     def calcnegloglike( self ):
-        if self.negloglike:
-            return self.negloglike
-        else:
-            logliks = []
-            params = []
-            for dim in range( len( self.data[0] ) -1 ):
-                thesedata = self.data[:, [dim, -1]]
-                fisher_coeffs = fisherdiscrim(thesedata)
-                raw_params = [sinit] + list( fisher_coeffs )
-                start_params = norm_old_params(raw_params);
-                #print "Searching for fit"
-                xopt, fopt = fit_GLC( thesedata, start_params )
-                logliks.append( fopt )
-                params.append( xopt )
-            self.dim = np.argmin( logliks )
-            self.negloglike = np.min( logliks )
-            self.params = dict(
-                dim = self.dim,
-                params = params[self.dim]
-                ,logliks = logliks, ps=params
-            )
-
+        logliks = []
+        params = []
+        for dim in range( len( self.data[0] ) -1 ):
+            thesedata = self.data[:, [dim, -1]]
+            fisher_coeffs = fisherdiscrim(thesedata)
+            #print fisher_coeffs 
+            raw_params = [sinit] + list( fisher_coeffs )
+            start_params = norm_old_params(raw_params);
+            #print "Searching for fit"
+            xopt, fopt = fit_GLC( thesedata, start_params )
+            logliks.append( fopt )
+            params.append( xopt )
+        self.dim = np.argmin( logliks )
+        self.negloglike = np.min( logliks )
+        self.params = dict(
+            dim = self.dim,
+            params = params[self.dim]
+            ,logliks = logliks, ps=params
+        )
 
 def fitsubj( subjdata ):
     """
@@ -238,10 +226,7 @@ def fitsubj( subjdata ):
 
 toydata = np.array([[ 0.1, 0, 1], [0, .9, 1], [.9, 0, 0], [1.1, 1, 0]])
 def test():
-    thesedata = toydata[:, [1,0,2]]
-    fit = onedfit(thesedata)
-    fit.calcnegloglike()
-    print fit.getnegloglike()
-    return fit
+    thisfit = onedfit( toydata )
+    return thisfit
 
 
