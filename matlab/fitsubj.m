@@ -1,3 +1,6 @@
+% Copyright John McDonnell, 2011
+% This is just a convenience function to run all the models on a datafile
+
 function [ neglikelihood , bic, params ] = fitsubj( fittype, this ) 
 % fittype is as follows:
 %  0 : 0d with fixed p=0.5

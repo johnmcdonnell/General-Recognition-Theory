@@ -1,4 +1,5 @@
 % Plot everything.
+% Copyright 2010 John McDonnell
 
 clf
 fns = {}; % '1.dat', '7.dat', '11.dat', '13.dat', '17.dat', '23.dat', '27.dat', '29.dat', '33.dat' };

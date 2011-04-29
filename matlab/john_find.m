@@ -1,9 +1,12 @@
 % Based on a demo by Alfonso-Reese, (c) 1995
+% Just reads in all my datafiles and runs all the models on them.
+
+
 %% Read in files
 format compact;
 clc;
 
-[~,files] = unix( 'ls data/<1->.dat' )
+[~,files] = unix( 'ls data/<1->.dat' ) % ...I really don't do matlab...
 [~,count] = sscanf( files, '%s' );
 
 rest=files;
@@ -11,12 +14,14 @@ rest=files;
 %% Get bics and write to a file
 old = []
 for i = 1:count
-    [file, rest] = strtok( rest);
+    % This, to me, seems like a crazy way to do things, I just don't know a
+    % better way.
+    [file, rest] = strtok( rest); 
     file
     thesedata = load_file( file );
 
     %thesedata = thesedata( 1:20, : ); % TAKING FIRST 20 TRIALS
-
+   
     bics = []
     for i = 0:4
         [ loglik, bic, params ] = fitsubj( i, thesedata ) 
