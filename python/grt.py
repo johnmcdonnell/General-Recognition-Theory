@@ -9,6 +9,7 @@ import scipy.optimize as optimize
 
 # Globals
 sinit = 10 # Noise param of some kind?
+ZLIMIT = 7
 
 # Helper functions
 def angle2xy(anglevec):
@@ -22,9 +23,23 @@ def xy2angle(xyvec):
     For a vector of x/y coordinates, finds their theta (in polar coords).
     """
     if xyvec[1] > 0:
-        return np.acos( xyvec[0] )
+        return np.arccos( xyvec[0] )
     else:
-        return 2*np.pi - np.acos( xyvec[0] )
+        return 2*np.pi - np.arccos( xyvec[0] )
+
+def norm_old_params(oldparams):
+    """
+    WARNING: May not work in the 3d case.
+    """
+    # TODO: Test if this is right.
+    return oldparams / npla.norm( oldparams[1:-1], 2 )
+
+def old2new_2dparams(oldparams):
+    """
+    WARNING: May not work in the 3d case.
+    """
+    # TODO: Test if this is right.
+    return oldparams / npla.norm( oldparams[1:-1], 2 )
 
 # Statistical functions
 def aic( negloglike, r ):
@@ -43,9 +58,9 @@ def bic( negloglike, r, n ):
     return 2 * negloglike + r * np.log(n)
 
 def lindecisbnd( k, ma, mb ):
+    # seems to be fine for 1d and 2d cases
     if k.size > 1:
         assert np.rank(k) == np.size( k, 1 ), "Covariance matrix not full rank."
-    if k.size > 1:
         kinv = npla.inv( k )
     else:
         kinv = 1/k
@@ -57,6 +72,7 @@ def lindecisbnd( k, ma, mb ):
     return np.hstack((anorm, bnorm))
 
 def fisherdiscrim( subjdata ):
+    # seems to be fine for 1d and 2d cases.
     subjdata = np.array( subjdata )
     aindices = [ i for i in range(len(subjdata)) if subjdata[i,-1] != 0 ]
     bindices = [ i for i in range(len(subjdata)) if subjdata[i,-1] == 0 ]
@@ -77,6 +93,7 @@ def fisherdiscrim( subjdata ):
     return lindecisbnd( kpooled, meana, meanb )
 
 def negloglike_glc( params, data, z_limit ):
+    # seems to be fine for 1d and 2d cases.
     if params[0] < .001 or params[0] > 500:
         return 999999
     
@@ -107,21 +124,27 @@ def negloglike_glc( params, data, z_limit ):
     log_b_probs = np.log( stat.norm.cdf( zscores[bindices] ) )
     
     negloglike = -(np.sum(log_a_probs)+np.sum(log_b_probs))
+    print "Params: ", params
+    print "-loglik: ", negloglike 
     return negloglike
 
-def fit_GLC( subjdata, inparams, z_limit=7 ):
+def fit_GLC( subjdata, inparams, z_limit=ZLIMIT ):
     thesedata = np.column_stack( [ subjdata[:,:-1], np.ones(len(subjdata)),
                                  subjdata[:,-1] ] )
+    #thesedata=subjdata
     
-    xopt, fopt, iter, funcalls, warnflag = optimize.fmin( negloglike_glc, inparams, (thesedata, z_limit), xtol=.001, full_output=True)
+    if len(inparams) == 4:
+        x0 = [inparams[0], xy2angle(inparams[1:3]), inparams[-1]]
+    else:
+        x0 = inparams
+    
+    xopt, fopt, iter, funcalls, warnflag = optimize.fmin( negloglike_glc, x0,
+                                                         (thesedata, z_limit),
+                                                         xtol=.001,
+                                                         full_output=True)
+    xopt = np.hstack([ xopt[0], angle2xy(xopt[1]), xopt[2] ])
     return xopt, fopt
 
-def norm_old_params(oldparams):
-    """
-    WARNING: May not work in the 3d case.
-    """
-    # TODO: Test if this is right.
-    return oldparams / npla.norm( oldparams[1:-1], 2 )
 
 class modelfit:
     def __init__( self, subjdata, r=None ):
@@ -211,22 +234,53 @@ class onedfit( modelfit ):
             ,logliks = logliks, ps=params
         )
 
-def fitsubj( subjdata ):
+class twodfit( modelfit ):
     """
-    Trial format: [x0,x1,...,y]
+    Fits the data with a 1-dimensional GRT model.
+    """
+    def __init__( self, subjdata, r=None ):
+        modelfit.__init__( self, subjdata, 3 )
+        self.calcnegloglike()
     
-    fittype is as follows:
-     0 : 0d with fixed p=0.5
-     1 : 0d with floating p
-     2 : 1d: x axis
-     3 : 1d: y axis
-     4 : 2d
-    """
-    pass
+    def calcnegloglike( self ):
+        logliks = []
+        params = []
+        fisher_coeffs = fisherdiscrim(self.data)
+        #print fisher_coeffs 
+        raw_params = [sinit] + list( fisher_coeffs )
+        print "raw_params", raw_params
+        start_params = norm_old_params(raw_params);
+        print "start_params", start_params
+        #print "Searching for fit"
+        xopt, fopt = fit_GLC( self.data, start_params )
+        self.negloglike = fopt
+        params= np.hstack([ xopt[0], angle2xy(xopt[1]), xopt[2] ])
+        self.params = params
+
+def plotdata( data ):
+    import pylab as pl
+    ch1 = np.array([ datum for datum in data if datum[-1]==0 ])
+    ch2 = np.array([ datum for datum in data if datum[-1]==1 ])
+    pl.plot( ch1[:,0], ch1[:,1], 'ob' )
+    pl.plot( ch2[:,0], ch2[:,1], 'og' )
+
+def plotline( a, b, intercept ):
+    import pylab as pl
+    ax = pl.axis()
+    if b == 0:
+        xs = [-intercept/a, -intercept/a]
+        ys = ax[2:4]
+    else:
+        xs = ax[:2]
+        ys = [ (-a*x - intercept)/b for x in xs ]
+    pl.plot( xs, ys )
 
 toydata = np.array([[ 0.1, 0, 1], [0, .9, 1], [.9, 0, 0], [1.1, 1, 0]])
 def test():
-    thisfit = onedfit( toydata )
+    thisfit = twodfit( toydata )
+    params = thisfit.params
+    plotdata( toydata )
+    plotline( params[1], params[2], params[3] )
     return thisfit
 
 
