@@ -8,7 +8,7 @@ import scipy.stats as stat
 import scipy.optimize as optimize
 
 # Globals
-sinit = 10 # Noise param of some kind?
+sinit = 10 # initial noise param
 ZLIMIT = 7
 
 # Helper functions
@@ -40,6 +40,9 @@ def old2new_2dparams(oldparams):
     """
     # TODO: Test if this is right.
     return oldparams / npla.norm( oldparams[1:-1], 2 )
+
+def insert_ones_col(data):
+    return np.column_stack( [ data[:,:-1], np.ones(len(data)), data[:,-1] ] )
 
 # Statistical functions
 def aic( negloglike, r ):
@@ -92,23 +95,33 @@ def fisherdiscrim( subjdata ):
     
     return lindecisbnd( kpooled, meana, meanb )
 
-def negloglike_glc( params, data, z_limit ):
+def negloglike_glc( params, data, z_limit=7, a=None ):
     # seems to be fine for 1d and 2d cases.
-    if params[0] < .001 or params[0] > 500:
-        return 999999
+    #print "Data to negloglike:", data
+    #print "Params to negloglike:", params
+    params = np.array( params )
+    dims = len(data[0])-2
+    if any([ np.isnan(x) for x in params ]):
+        raise Exception, "Wtf, param was nan!?!?"
     
-    # Convert param[1] from angle to a1/a2 notation in 2d case.
-    if len(data[0])==4:
+    if dims==2:
+        # Convert param[1] from angle to a1/a2 notation in 2d case.
         xy = angle2xy( params[1] ) # just converting angle back to a1/a2
         z_coefs = np.hstack([xy, params[2]])
-    else:
+    elif dims==1:
+    #    # a param fixed in the 1d case
+        assert a, "a is required."
+        params = np.hstack([ params[0], a, params[1] ])
         z_coefs = params[1:]
+    else:
+        raise Exception, "More than 2 dimensions not yet supported."
     
     # Normalize coefficients to units of SD:
     z_coefs /= params[0]
     
     # Compute z-scores for data
     zscores = np.inner( np.matrix(data[:,:-1]), z_coefs )
+    #print "zscores", zscores
     
     # Truncate extreme z-scores
     for i, score in enumerate( xrange(len(zscores)) ):
@@ -121,31 +134,66 @@ def negloglike_glc( params, data, z_limit ):
     bindices = [ i for i in range(len(data)) if data[i,-1] != 1 ]
     
     log_a_probs = np.log( 1-stat.norm.cdf( zscores[aindices] ) )
+    if any([not np.isfinite(x) for x in log_a_probs ]):
+        #print "caught div by zero."
+        return np.inf
+    
     log_b_probs = np.log( stat.norm.cdf( zscores[bindices] ) )
+    if any([not np.isfinite(x) for x in log_b_probs ]):
+        #print "caught div by zero."
+        return np.inf
     
     negloglike = -(np.sum(log_a_probs)+np.sum(log_b_probs))
-    print "Params: ", params
-    print "-loglik: ", negloglike 
+    print "negloglike Params: ", params
+    print "calculated negloglik: ", negloglike 
     return negloglike
 
 def fit_GLC( subjdata, inparams, z_limit=ZLIMIT ):
-    thesedata = np.column_stack( [ subjdata[:,:-1], np.ones(len(subjdata)),
-                                 subjdata[:,-1] ] )
     #thesedata=subjdata
+    thesedata = insert_ones_col( subjdata )
+    dims = len(inparams) - 2
     
-    if len(inparams) == 4:
+    print inparams
+    if dims == 2:
         x0 = [inparams[0], xy2angle(inparams[1:3]), inparams[-1]]
+        #bounds = [(.001,500)]
+        bounds = [(.00001,np.inf), (.00001,np.inf),(.00001,np.inf)]
+    elif dims==1:
+        angleparam = inparams[1]
+        #x0 = (inparams[0], inparams[2])
+        bounds = [(.00001,np.inf), (-np.inf,np.inf)]
+        print "init: ", inparams
+        a = inparams[1]
+        x0 = inparams[[0,2]]
+        print "running with x0 = ", x0
+        xopt, fopt, iter, im, sm = optimize.fmin(func= negloglike_glc, 
+                                                       x0 = x0, 
+                                                       args = (
+                                                           thesedata, 
+                                                           z_limit,
+                                                           a
+                                                       ), 
+                                                       full_output=True
+                                                      )
+        return np.hstack([xopt[0], a, xopt[1]]), fopt
+        
     else:
-        x0 = inparams
+        raise Exception, "More than 2 dims not yet supported."
     
-    xopt, fopt, iter, funcalls, warnflag = optimize.fmin( negloglike_glc, x0,
-                                                         (thesedata, z_limit),
-                                                         xtol=.001,
-                                                         full_output=True)
-    xopt = np.hstack([ xopt[0], angle2xy(xopt[1]), xopt[2] ])
+    xopt, fopt, iter, im, sm = optimize.fmin_slsqp(func=negloglike_glc 
+                                                   , x0 = x0 
+                                                   , args = (thesedata,
+                                                             z_limit,
+                                                             angleparam) 
+                                                   , bounds=bounds 
+                                                   , full_output=True
+                                                  )
+    
+    if dims==2:
+        xopt = np.hstack([ xopt[0], angle2xy(xopt[1]), xopt[2] ])
     return xopt, fopt
 
-
+# Generic modelfit class, to be inherited.
 class modelfit:
     def __init__( self, subjdata, r=None ):
         self.data = np.array( subjdata )
@@ -184,10 +232,13 @@ class modelfit:
         else:
             return self.bic
 
+# Classes for the different models.
 class nullmodel( modelfit ):
     def __init__( self, subjdata ):
         modelfit.__init__( self, subjdata, 0 )
         self.calcnegloglike()
+        self.calcaic()
+        self.calcbic()
     
     def calcnegloglike ( self ):
         self.negloglike = -np.log( .5 ) * self.n
@@ -197,6 +248,8 @@ class interceptmodel( modelfit ):
     def __init__( self, subjdata ):
         modelfit.__init__( self, subjdata, 1 )
         self.calcnegloglike()
+        self.calcaic()
+        self.calcbic()
     
     def calcnegloglike( self ):
         numa = np.sum( self.data[:,-1] )
@@ -212,6 +265,8 @@ class onedfit( modelfit ):
     def __init__( self, subjdata, r=None ):
         modelfit.__init__( self, subjdata, 2 )
         self.calcnegloglike()
+        self.calcaic()
+        self.calcbic()
     
     def calcnegloglike( self ):
         logliks = []
@@ -228,10 +283,9 @@ class onedfit( modelfit ):
             params.append( xopt )
         self.dim = np.argmin( logliks )
         self.negloglike = np.min( logliks )
-        self.params = dict(
-            dim = self.dim,
-            params = params[self.dim]
-            ,logliks = logliks, ps=params
+        self.params = params[self.dim]
+        self.debug = dict(
+            logliks = logliks, ps=params
         )
 
 class twodfit( modelfit ):
@@ -241,12 +295,14 @@ class twodfit( modelfit ):
     def __init__( self, subjdata, r=None ):
         modelfit.__init__( self, subjdata, 3 )
         self.calcnegloglike()
+        self.calcaic()
+        self.calcbic()
     
     def calcnegloglike( self ):
         logliks = []
         params = []
         fisher_coeffs = fisherdiscrim(self.data)
-        #print fisher_coeffs 
+        print "Fisher: ", fisher_coeffs 
         raw_params = [sinit] + list( fisher_coeffs )
         print "raw_params", raw_params
         start_params = norm_old_params(raw_params);
@@ -254,9 +310,10 @@ class twodfit( modelfit ):
         #print "Searching for fit"
         xopt, fopt = fit_GLC( self.data, start_params )
         self.negloglike = fopt
-        params= np.hstack([ xopt[0], angle2xy(xopt[1]), xopt[2] ])
-        self.params = params
+        self.params = xopt
+        self.paramsconv = np.hstack([ xopt[0], xy2angle(xopt[1:3]), xopt[3] ])
 
+# Plotting functions
 def plotdata( data ):
     import pylab as pl
     ch1 = np.array([ datum for datum in data if datum[-1]==0 ])
@@ -275,12 +332,15 @@ def plotline( a, b, intercept ):
         ys = [ (-a*x - intercept)/b for x in xs ]
     pl.plot( xs, ys )
 
-toydata = np.array([[ 0.1, 0, 1], [0, .9, 1], [.9, 0, 0], [1.1, 1, 0]])
+# Test code.
+toydata = np.array([[ 0.1, 0, 1], [0, .9, 1], [.9, 0, 0], [1.1, 1, 0], [1, 1, 1]])
+toyconv = insert_ones_col( toydata )
+toy1 = toyconv[:,[0,2,3]]
 def test():
-    thisfit = twodfit( toydata )
+    thisfit = onedfit( toydata )
     params = thisfit.params
-    plotdata( toydata )
-    plotline( params[1], params[2], params[3] )
+    #plotdata( toydata )
+    #plotline( params[1], params[2], params[3] )
     return thisfit
 
 

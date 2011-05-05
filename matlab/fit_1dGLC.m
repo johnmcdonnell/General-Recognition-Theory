@@ -21,10 +21,11 @@ function [out_params, neglikelihood] = fit_1dGLC(in_params, data, z_limit)
 %                  with Optimization Toolbox v 3.0
 %                  by LAR
 
+in_params
 
 % Set contraints on parameters
-vlb = [ .001 in_params(2)];
-vub = [ 500 in_params(2)];
+vlb = [ .001 in_params(2) ];
+vub = [ 500 in_params(2) ];
 
 % Convert params to search format.  
 % Search format: [noise bias]

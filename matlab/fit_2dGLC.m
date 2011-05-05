@@ -23,7 +23,7 @@ function [out_params, neglikelihood] = fit_2dGLC(in_params, data, z_limit)
 
 % Set contraints on parameters
 vlb = [ .001 ];
-vub = [ 500 ];
+vub = [ inf  ];
 
 % Convert params to search format.  
 % Search format: [noise angle bias]
@@ -35,9 +35,13 @@ options = optimset(...
     'TolFun', .001');      % Termination tolerance on f    
 
 % Search!
-final_params = fmincon('negloglike_2dGLC',start_params,[],[],[],[],vlb,vub,[],options,data,z_limit);
+final_params = fmincon(...
+    'negloglike_2dGLC',start_params,[],[],[],[],vlb,vub,[],options,data,z_limit...
+    );
 
 % Report results
+%final_params
 out_params = new2old_2dparams(final_params);
 neglikelihood = negloglike_2dGLC(final_params,data,z_limit);
+%negloglike_2dGLC(start_params, data, z_limit);
 
