@@ -158,6 +158,63 @@ def negloglike_glc( params, data, z_limit=7, a=None ):
     #print "calculated negloglik: ", negloglike 
     return negloglike
 
+def getparams( alpha, data ):
+    labels = data[:,-1]
+    stims = data[:,:-1]
+    assert all( [label in [0,1] for label in labels ] )
+    aindices = labels == 1
+    bindices = labels == 0
+    acov = np.cov( stims[ aindices ].T )
+    bcov = np.cov( stims[ bindices ].T )
+    amu = np.mean( stims[ aindices ], 0 )
+    bmu = np.mean( stims[ bindices ], 0 )
+    # Declaring the params of 'solve' to be matrices makes it work even in the
+    # 1d case.
+    b = np.linalg.solve( np.matrix(alpha * acov + (1-alpha) * bcov), 
+             np.matrix(bmu - amu ) )
+    bsigAb = np.inner(np.inner(b, acov), b)
+    bsigBb = np.inner(np.inner(b, bcov), b)
+    c0 = -(alpha * bsigAb * np.inner( b, bmu) + \
+         (1-alpha) * bsigBb * np.inner(b, amu)) /  \
+         (alpha*bsigAb + (1-alpha)*bsigBb)
+    
+    #plotline( b[0], b[1], c0 )
+    return b, c0
+
+def negloglike_alpha( alpha, data, z_limit=7 ):
+    b, c0 = getparams( alpha, data )
+    
+    labels = data[:,-1]
+    stims = data[:,:-1]
+    aindices = labels == 1
+    bindices = labels == 0
+    mu = np.inner( b, stims ) + c0  # NOTE: I'm very uncertain about this.
+    stdeviation = np.inner( np.inner( b, np.cov(stims.T) ), b )
+    zscores = mu / np.sqrt( stdeviation ) # TODO: subtracting 1 here does a lot, why? -1 # hmmm
+    #zscores = np.array([ (stim-mu) / np.sqrt(stdeviation) for stim in stims ])
+    for i in xrange(len(zscores) ):
+        if zscores[i] > z_limit:
+            zscores[i] = z_limit
+        elif zscores[i] < -z_limit:
+            zscores[i] = -z_limit
+    
+    log_a_probs = np.log( 1-stat.norm.cdf( zscores[aindices] ) )
+    log_b_probs = np.log( stat.norm.cdf( zscores[bindices] ) )
+    print "Loga, then logb"
+    print zscores[aindices]
+    print zscores[bindices]
+    
+    negloglike = -(np.sum(log_a_probs)+np.sum(log_b_probs))
+    return negloglike
+
+def fit_GLC_alpha( subjdata ):
+    xopt, fval, ierr, numfunc = optimize.fminbound(negloglike_alpha
+                                                   , 0, 1
+                                                   , args=[subjdata]
+                                                   , full_output=True )
+    return xopt, fval
+
+
 def fit_GLC( subjdata, inparams, z_limit=ZLIMIT ):
     #thesedata=subjdata
     thesedata = insert_ones_col( subjdata )
@@ -286,9 +343,9 @@ class onedfit( modelfit ):
             logliks.append( fopt )
             params.append( xopt )
         self.dim = np.argmin( logliks )
-        self.negloglike = np.min( logliks )
+        self.negloglike = logliks[self.dim]
         self.params = params[self.dim]
-        self.debug = dict(
+        self.results = dict(
             logliks = logliks, ps=params
         )
         thisxy = np.zeros(2)
@@ -297,7 +354,7 @@ class onedfit( modelfit ):
 
 class twodfit( modelfit ):
     """
-    Fits the data with a 1-dimensional GRT model.
+    Fits the data with a 2-dimensional GRT model.
     """
     def __init__( self, subjdata, r=None ):
         modelfit.__init__( self, subjdata, 3 )
@@ -320,9 +377,61 @@ class twodfit( modelfit ):
         self.params = xopt
         self.paramsconv = np.hstack([ xopt[0], xy2angle(xopt[1:3]), xopt[3] ])
 
+class onedfit_alpha( modelfit ):
+    """
+    Fits the data with a 1-dimensional GRT model.
+    TODO: fill me in!
+    """
+    def __init__( self, subjdata, r=None ):
+        modelfit.__init__( self, subjdata, 2 )
+        self.calcnegloglike()
+        self.calcaic()
+        self.calcbic()
+    
+    def calcnegloglike( self ):
+        logliks = []
+        params = []
+        for dim in range( len( self.data[0] ) -1 ):
+            thesedata = self.data[:, [dim, -1]]
+            alpha, fopt = fit_GLC_alpha( thesedata )
+            xopt = getparams( alpha, thesedata )
+            logliks.append( fopt )
+            params.append( xopt )
+        self.dim = np.argmin( logliks )
+        self.negloglike = logliks[ self.dim ]
+        self.params = params[ self.dim ]
+        self.results = dict(
+            logliks = logliks, 
+            ps=params
+        )
+        thisxy = np.zeros(2)
+        thisxy[self.dim] = self.params[1]
+        self.fullparams = np.hstack([ self.params[0], thisxy, self.params[-1] ])
+
+class twodfit_alpha( modelfit ):
+    """
+    Fits the data with a 2-dimensional GRT model.
+    """
+    def __init__( self, subjdata, r=None ):
+        modelfit.__init__( self, subjdata, 3 )
+        self.calcnegloglike()
+        self.calcaic()
+        self.calcbic()
+    
+    def calcnegloglike( self ):
+        logliks = []
+        params = []
+        #print "Searching for fit"
+        alpha, fopt = fit_GLC_alpha( self.data )
+        xopt = getparams( alpha, self.data )
+        self.negloglike = fopt
+        self.params = xopt
+        #self.paramsconv = np.hstack([ xopt[0], xy2angle(xopt[1:3]), xopt[3] ])
+
 # Plotting functions
 def plotdata( data ):
     import pylab as pl
+    pl.close()
     ch1 = np.array([ datum for datum in data if datum[-1]==0 ])
     ch2 = np.array([ datum for datum in data if datum[-1]==1 ])
     pl.plot( ch1[:,0], ch1[:,1], 'xb')
@@ -345,19 +454,33 @@ def plotline( a, b, intercept ):
 toydata = np.array([[ 0.1, 0, 1], [0, .9, 1], [.9, 0, 0], [1.1, 1, 0], [1, 1, 1]])
 toyconv = insert_ones_col( toydata )
 toy1 = toyconv[:,[0,2,3]]
-def test(fn):
+def test(fn, twod=True):
     data = np.loadtxt( os.popen("sed 's/ch//g' %s |  awk NF==10 | awk '{if \
                                 ($4==1) { print $0} }'" % fn), usecols=[4,5,9] )
     data[:,-1] -= 1
     
-    twod = True
+    twod = False
     if twod:
-        thisfit = twodfit( data )
-        params = thisfit.params
         plotdata( data )
-        plotline( params[1], params[2], params[3] )
+        alpha, fopt = fit_GLC_alpha( data )
+        print alpha
+        print fopt
+        #thisfit = twodfit( data )
+        
+       #params = thisfit.params
+        b, c0 = getparams( alpha, data )
+        plotline( b[0], b[1], c0 )
     else:
-        thisfit = onedfit( data )
-    return thisfit
+        #plotdata( data )
+        data = data[:,[0,2]]
+        alpha, fopt = fit_GLC_alpha( data )
+        print "Final alpha: ", alpha
+        print fopt
+        #thisfit = twodfit( data )
+        
+        #params = thisfit.params
+        b, c0 = getparams( alpha, data )
+        #plotline( b[0], b[1], c0 )
+    #return thisfit
 
 
