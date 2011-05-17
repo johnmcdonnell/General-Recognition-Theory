@@ -16,6 +16,7 @@ ZLIMIT = 7
 def angle2xy(anglevec):
     """
     For a vector of angles, finds their x/y location on a unit circle.
+    *** warning, either this or xy2angle may have a problem. ***
     """
     return np.cos(anglevec), np.sin(anglevec)
 
@@ -96,8 +97,12 @@ def fisherdiscrim( subjdata ):
     
     return lindecisbnd( kpooled, meana, meanb )
 
+# GLC specific functions
+
+def var_from_b( b, data ):
+    return np.inner( np.inner( b, np.cov( data[:,:-1].T ) ), b )
+
 def negloglike_glc( params, data, z_limit=7, a=None ):
-    # seems to be fine for 1d and 2d cases.
     #print "Data to negloglike:", data
     #print "Params to negloglike:", params
     params = np.array( params )
@@ -111,15 +116,18 @@ def negloglike_glc( params, data, z_limit=7, a=None ):
         #if any([ x>.0001 for x in params ]):
         #    return np.inf
         # Convert param[1] from angle to a1/a2 notation in 2d case.
-        xy = angle2xy( params[1] ) # just converting angle back to a1/a2
-        z_coefs = np.hstack([xy, params[2]])
+        if len(params) == 3:
+            xy = angle2xy( params[1] ) # just converting angle back to a1/a2
+        else:
+            xy = params[1:3]
+        z_coefs = np.hstack([xy, params[-1]])
         #print z_coefs
     elif dims==1:
-    #    # a param fixed in the 1d case
-        assert a, "a is required."
+        # a param fixed in the 1d case
         if params[0] < .001:
             return np.inf
-        params = np.hstack([ params[0], a, params[1] ])
+        if len( params ) == 2:
+            params = np.hstack([ params[0], a, params[1] ])
         z_coefs = copy( params[1:] )
     else:
         raise Exception, "More than 2 dimensions not yet supported."
@@ -158,6 +166,9 @@ def negloglike_glc( params, data, z_limit=7, a=None ):
     #print "calculated negloglik: ", negloglike 
     return negloglike
 
+def neglike_varonly( var, params, data ):
+    return negloglike_glc( np.hstack([var, params]), insert_ones_col(data) )
+
 def getparams( alpha, data ):
     labels = data[:,-1]
     stims = data[:,:-1]
@@ -170,8 +181,10 @@ def getparams( alpha, data ):
     bmu = np.mean( stims[ bindices ], 0 )
     # Declaring the params of 'solve' to be matrices makes it work even in the
     # 1d case.
-    b = np.linalg.solve( np.matrix(alpha * acov + (1-alpha) * bcov), 
-             np.matrix(bmu - amu ) )
+    b = np.array( np.linalg.solve( np.matrix(alpha * acov + (1-alpha) * bcov),
+                                   np.matrix(bmu - amu).T
+                                 )
+                ).ravel()
     bsigAb = np.inner(np.inner(b, acov), b)
     bsigBb = np.inner(np.inner(b, bcov), b)
     c0 = -(alpha * bsigAb * np.inner( b, bmu) + \
@@ -189,9 +202,8 @@ def negloglike_alpha( alpha, data, z_limit=7 ):
     aindices = labels == 1
     bindices = labels == 0
     mu = np.inner( b, stims ) + c0  # NOTE: I'm very uncertain about this.
-    stdeviation = np.inner( np.inner( b, np.cov(stims.T) ), b )
-    zscores = mu / np.sqrt( stdeviation ) # TODO: subtracting 1 here does a lot, why? -1 # hmmm
-    #zscores = np.array([ (stim-mu) / np.sqrt(stdeviation) for stim in stims ])
+    variance = np.inner( np.inner( b, np.cov(stims.T) ), b )
+    zscores = mu / np.sqrt( variance )
     for i in xrange(len(zscores) ):
         if zscores[i] > z_limit:
             zscores[i] = z_limit
@@ -200,9 +212,6 @@ def negloglike_alpha( alpha, data, z_limit=7 ):
     
     log_a_probs = np.log( 1-stat.norm.cdf( zscores[aindices] ) )
     log_b_probs = np.log( stat.norm.cdf( zscores[bindices] ) )
-    print "Loga, then logb"
-    print zscores[aindices]
-    print zscores[bindices]
     
     negloglike = -(np.sum(log_a_probs)+np.sum(log_b_probs))
     return negloglike
@@ -210,6 +219,8 @@ def negloglike_alpha( alpha, data, z_limit=7 ):
 def fit_GLC_alpha( subjdata ):
     xopt, fval, ierr, numfunc = optimize.fminbound(negloglike_alpha
                                                    , 0, 1
+                                                   , xtol = .00000001
+                                                   , maxfun = 10000
                                                    , args=[subjdata]
                                                    , full_output=True )
     return xopt, fval
@@ -361,6 +372,7 @@ class twodfit( modelfit ):
         self.calcnegloglike()
         self.calcaic()
         self.calcbic()
+        self.dim=-999
     
     def calcnegloglike( self ):
         logliks = []
@@ -417,6 +429,7 @@ class twodfit_alpha( modelfit ):
         self.calcnegloglike()
         self.calcaic()
         self.calcbic()
+        self.dim=-999
     
     def calcnegloglike( self ):
         logliks = []
@@ -437,7 +450,7 @@ def plotdata( data ):
     pl.plot( ch1[:,0], ch1[:,1], 'xb')
     pl.plot( ch2[:,0], ch2[:,1], '+g')
 
-def plotline( a, b, intercept ):
+def plotline( a, b, intercept, plotargs='-' ):
     import pylab as pl
     ax = pl.axis()
     if b == 0:
@@ -446,7 +459,7 @@ def plotline( a, b, intercept ):
     else:
         xs = ax[:2]
         ys = [ (-a*x - intercept)/b for x in xs ]
-    pl.plot( xs, ys )
+    pl.plot( xs, ys, plotargs )
 
 
  
@@ -454,28 +467,78 @@ def plotline( a, b, intercept ):
 toydata = np.array([[ 0.1, 0, 1], [0, .9, 1], [.9, 0, 0], [1.1, 1, 0], [1, 1, 1]])
 toyconv = insert_ones_col( toydata )
 toy1 = toyconv[:,[0,2,3]]
-def test(fn, twod=True):
+
+def compare_fits( fns ):
+    models = [onedfit, twodfit, onedfit_alpha, twodfit_alpha ]
+    results = {}
+    for fn in fns:
+        data = np.loadtxt( os.popen("sed 's/ch//g' %s |  awk NF==10 | \
+                                    awk '{if ($4==1) { print $0} }'" % fn),
+                          usecols=[4,5,9] )
+        data[:,-1] -= 1
+        results[fn] = [ m( data ) for m in models ]
+    for fn in fns:
+        print fn
+        print [ fit.negloglike for fit in results[fn] ]
+        for fit in results[fn]:
+            print "params: ", fit.params
+            print "2d var should be: ", var_from_b( fit.params[1:3], fit.data )
+            print "negloglike: ", fit.negloglike
+            print "bic: ", fit.bic
+            print "dim: ", fit.dim
+        
+
+def test(fn, twod=True, dim=0):
     data = np.loadtxt( os.popen("sed 's/ch//g' %s |  awk NF==10 | awk '{if \
                                 ($4==1) { print $0} }'" % fn), usecols=[4,5,9] )
     data[:,-1] -= 1
     
-    twod = False
     if twod:
         plotdata( data )
-        alpha, fopt = fit_GLC_alpha( data )
-        print alpha
-        print fopt
+        alpha, foptalpha = fit_GLC_alpha( data )
+        print "Final alpha: ", alpha
+        print "alphanegloglik: ", foptalpha
+        alpha_params = np.hstack( getparams( alpha, data ) ) 
+        sigma_init = var_from_b( alpha_params[:-1], data )
+        alpha_params = np.hstack( [[sigma_init], alpha_params] )
+        print "Params from alpha optimization: ", alpha_params
+        outputs = optimize.fmin(  negloglike_glc
+                                , x0 = alpha_params
+                                , args=[ insert_ones_col( data ) ]
+                                , full_output=True 
+                               )
+        xmin=outputs[0]
+        fopt=outputs[1]
+        print "Params: ", xmin
+        print "negloglike: ", fopt
+        print "alphaerror: ", foptalpha - fopt
         #thisfit = twodfit( data )
         
-       #params = thisfit.params
-        b, c0 = getparams( alpha, data )
-        plotline( b[0], b[1], c0 )
+        #params = thisfit.params
+        #b, c0 = getparams( alpha, data )
+        plotline( *alpha_params[1:], plotargs='k' )
+        plotline( *xmin[1:], plotargs='r' )
     else:
         #plotdata( data )
-        data = data[:,[0,2]]
-        alpha, fopt = fit_GLC_alpha( data )
+        data = data[:,[dim,2]]
+        alpha, foptalpha = fit_GLC_alpha( data )
         print "Final alpha: ", alpha
-        print fopt
+        print foptalpha
+        #thisfit = twodfit( data )
+        alpha_params = np.hstack( getparams( alpha, data ) ) 
+        sigma_init = var_from_b( alpha_params[:-1], data )
+        alpha_params = np.hstack( [[sigma_init], alpha_params] )
+        print "Params from alpha optimization: ", alpha_params
+        outputs = optimize.fmin(  negloglike_glc
+                                , x0 = alpha_params
+                                , args=[ insert_ones_col( data ) ]
+                                , full_output=True 
+                               )
+        xmin=outputs[0]
+        fopt=outputs[1]
+        print "Params: ", xmin
+        print "negloglike: ", fopt
+        print "alphaerror: ", foptalpha - fopt
         #thisfit = twodfit( data )
         
         #params = thisfit.params
@@ -483,4 +546,6 @@ def test(fn, twod=True):
         #plotline( b[0], b[1], c0 )
     #return thisfit
 
+
+fns = [ 'data/'+fn for fn in os.listdir('data') if fn[-4:]==".dat" ]
 
