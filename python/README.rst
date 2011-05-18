@@ -9,6 +9,9 @@ Alfonso-Reese, hosted on `her website
 over to Python for my own research, and realized I should make my efforts
 public. 
 
+So far I have only been working on the General Linear Classifier. Alfonso-Reese
+has also implemented the General Quadratic Classifier.
+
 A note on changes in this version
 ---------------------------------
 
@@ -27,8 +30,9 @@ descent search on all parameters.
 
 This optimization method is now much better than the Alfonso-Reese
 method, but I can't guarantee that it always finds the best solution. I'm
-still trying to work on better guarantees that the behavior of these models is
-reasonable.
+still trying to work on better guarantees that the optimization will work
+correctly.
+
 
 .. [Ashby1992] Ashby, F. G. (1992). "Multidimensional Models of Categorization."
     In F. G. Ashby (Ed.), *Multidimensional Models of Perception and Cognition*
