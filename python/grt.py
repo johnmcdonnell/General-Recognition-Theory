@@ -9,7 +9,7 @@ import scipy.optimize as optimize
 from copy import copy
 
 # Globals
-sinit = 10 # initial noise param
+sinit = 10 # initial noise param for the Fisher fitting method.
 ZLIMIT = 7
 
 # Helper functions
@@ -98,8 +98,11 @@ def fisherdiscrim( subjdata ):
     return lindecisbnd( kpooled, meana, meanb )
 
 # GLC specific functions
-
 def var_from_b( b, data ):
+    """
+    Takes the b variable and the data and returns the variance as dictated by
+    Equation 15 in Ashby (1992).
+    """
     return np.inner( np.inner( b, np.cov( data[:,:-1].T ) ), b )
 
 def negloglike_glc( params, data, z_limit=7, a=None ):
@@ -166,8 +169,6 @@ def negloglike_glc( params, data, z_limit=7, a=None ):
     #print "calculated negloglik: ", negloglike 
     return negloglike
 
-def neglike_varonly( var, params, data ):
-    return negloglike_glc( np.hstack([var, params]), insert_ones_col(data) )
 
 def getparams( alpha, data ):
     labels = data[:,-1]
@@ -217,21 +218,22 @@ def negloglike_alpha( alpha, data, z_limit=7 ):
     return negloglike
 
 def fit_GLC_alpha( subjdata ):
+    xtol = 10**-5
+    maxfuncevals = 500
     xopt, fval, ierr, numfunc = optimize.fminbound(negloglike_alpha
                                                    , 0, 1
-                                                   , xtol = .00000001
-                                                   , maxfun = 10000
+                                                   , xtol = xtol
+                                                   , maxfun = maxfuncevals
                                                    , args=[subjdata]
                                                    , full_output=True )
     return xopt, fval
 
 
-def fit_GLC( subjdata, inparams, z_limit=ZLIMIT ):
+def fit_GLC_allparams( subjdata, inparams, z_limit=ZLIMIT ):
     #thesedata=subjdata
     thesedata = insert_ones_col( subjdata )
     dims = len(inparams) - 2
     
-    print inparams
     if dims == 2:
         x0 = [inparams[0], xy2angle(inparams[1:3]), inparams[-1]]
         #bounds = [(.00001,np.inf), (-np.inf,np.inf),(-np.inf,np.inf)]
@@ -332,7 +334,83 @@ class interceptmodel( modelfit ):
 
 class onedfit( modelfit ):
     """
-    Fits the data with a 1-dimensional GRT model.
+    Fits the data with a 1-dimensional GLC model, initially using the scalar
+    fitting method suggested by Ashby (1992) then using that fit as a starting
+    point for a Nelder-Meade descent.
+    
+    This method seems to be strictly better than the other methods, although it
+    is not guaranteed to find a global minimum.
+    """
+    def __init__( self, subjdata, r=None ):
+        modelfit.__init__( self, subjdata, 2 )
+        self.calcnegloglike()
+        self.calcaic()
+        self.calcbic()
+    
+    def calcnegloglike( self ):
+        logliks = []
+        params = []
+        for dim in range( len( self.data[0] ) -1 ):
+            # Remove one of the dimensions from the dataset.
+            thesedata = self.data[:, [dim, -1]]
+            
+            # Optimize using the one-parameter optimization method.
+            alpha, foptalpha = fit_GLC_alpha( self.data )
+            alpha_params = np.hstack( getparams( alpha, self.data ) ) 
+            sigma_init = var_from_b( alpha_params[:-1], self.data )
+            alpha_params = np.hstack( [[sigma_init], alpha_params] )
+            
+            # Minimize using hill climbing from that point:
+            xopt, fopt = fit_GLC_allparams( self.data, alpha_params  )
+            
+            logliks.append( fopt )
+            params.append( xopt )
+        self.dim = np.argmin( logliks )
+        self.negloglike = logliks[self.dim]
+        self.params = params[self.dim]
+        self.results = dict(
+            logliks = logliks, ps=params
+        )
+        thisxy = np.zeros(2)
+        thisxy[self.dim] = self.params[1]
+        self.fullparams = np.hstack([ self.params[0], thisxy, self.params[-1] ])
+
+class twodfit( modelfit ):
+    """
+    Fits the data with a 2-dimensional GLC model, initially using the scalar
+    fitting method suggested by Ashby (1992) then using that fit as a starting
+    point for a Nelder-Meade descent.
+    
+    This method seems to be strictly better than the other methods, although it
+    is not guaranteed to find a global minimum.
+    """
+    def __init__( self, subjdata, r=None ):
+        modelfit.__init__( self, subjdata, 3 )
+        self.calcnegloglike()
+        self.calcaic()
+        self.calcbic()
+        self.dim=-999
+    
+    def calcnegloglike( self ):
+        # Fit using the Ashby method on one parameter (alpha)
+        alpha, foptalpha = fit_GLC_alpha( self.data )
+        alpha_params = np.hstack( getparams( alpha, self.data ) ) 
+        sigma_init = var_from_b( alpha_params[:-1], self.data )
+        alpha_params = np.hstack( [[sigma_init], alpha_params] )
+        
+        # Minimize using hill climbing from that point:
+        xopt, fopt = fit_GLC_allparams( self.data, alpha_params  )
+        
+        # Record the results.
+        self.negloglike = fopt
+        self.params = xopt
+        self.paramsconv = np.hstack([ xopt[0], xy2angle(xopt[1:3]), xopt[3] ])
+
+class onedfit_fisher( modelfit ):
+    """
+    Fits the data with a 1-dimensional GLC model, using an optimization on 2
+    paramters with the Fisher discriminant as the starting point for
+    optimization.
     """
     def __init__( self, subjdata, r=None ):
         modelfit.__init__( self, subjdata, 2 )
@@ -350,7 +428,7 @@ class onedfit( modelfit ):
             raw_params = [sinit] + list( fisher_coeffs )
             start_params = norm_old_params(raw_params);
             #print "Searching for fit"
-            xopt, fopt = fit_GLC( thesedata, start_params )
+            xopt, fopt = fit_GLC_allparams( thesedata, start_params )
             logliks.append( fopt )
             params.append( xopt )
         self.dim = np.argmin( logliks )
@@ -363,9 +441,13 @@ class onedfit( modelfit ):
         thisxy[self.dim] = self.params[1]
         self.fullparams = np.hstack([ self.params[0], thisxy, self.params[-1] ])
 
-class twodfit( modelfit ):
+class twodfit_fisher( modelfit ):
     """
-    Fits the data with a 2-dimensional GRT model.
+    Fits the data with a 2-dimensional GLC model, using an optimization on 3
+    paramters with the Fisher discriminant as the starting point for
+    optimization.
+    
+    This method does not seem to consistently find the best fit.
     """
     def __init__( self, subjdata, r=None ):
         modelfit.__init__( self, subjdata, 3 )
@@ -375,8 +457,6 @@ class twodfit( modelfit ):
         self.dim=-999
     
     def calcnegloglike( self ):
-        logliks = []
-        params = []
         fisher_coeffs = fisherdiscrim(self.data)
         print "Fisher: ", fisher_coeffs 
         raw_params = [sinit] + list( fisher_coeffs )
@@ -384,15 +464,20 @@ class twodfit( modelfit ):
         start_params = norm_old_params(raw_params);
         print "start_params", start_params
         #print "Searching for fit"
-        xopt, fopt = fit_GLC( self.data, start_params )
+        xopt, fopt = fit_GLC_allparams( self.data, start_params )
         self.negloglike = fopt
         self.params = xopt
         self.paramsconv = np.hstack([ xopt[0], xy2angle(xopt[1:3]), xopt[3] ])
 
 class onedfit_alpha( modelfit ):
     """
-    Fits the data with a 1-dimensional GRT model.
-    TODO: fill me in!
+    Fits the data with a 1-dimensional GLC model using the one-parameter
+    fitting method suggested by Ashby (1992).
+    
+    This method does not seem to consistently find the best fit, although
+    qualitatively it seems to be an improvement on the Fisher method (for
+    example, if there is a 1D solution almost as good as the 2D solution, it
+    tends to find it.
     """
     def __init__( self, subjdata, r=None ):
         modelfit.__init__( self, subjdata, 2 )
@@ -407,6 +492,7 @@ class onedfit_alpha( modelfit ):
             thesedata = self.data[:, [dim, -1]]
             alpha, fopt = fit_GLC_alpha( thesedata )
             xopt = getparams( alpha, thesedata )
+            xopt = np.hstack([ var_from_b( xopt[0], thesedata ), xopt[0]])
             logliks.append( fopt )
             params.append( xopt )
         self.dim = np.argmin( logliks )
@@ -423,6 +509,11 @@ class onedfit_alpha( modelfit ):
 class twodfit_alpha( modelfit ):
     """
     Fits the data with a 2-dimensional GRT model.
+    
+    This method does not seem to consistently find the best fit, although
+    qualitatively it seems to be an improvement on the Fisher method (for
+    example, if there is a 1D solution almost as good as the 2D solution, it
+    tends to find it.
     """
     def __init__( self, subjdata, r=None ):
         modelfit.__init__( self, subjdata, 3 )
@@ -432,13 +523,11 @@ class twodfit_alpha( modelfit ):
         self.dim=-999
     
     def calcnegloglike( self ):
-        logliks = []
-        params = []
         #print "Searching for fit"
         alpha, fopt = fit_GLC_alpha( self.data )
         xopt = getparams( alpha, self.data )
         self.negloglike = fopt
-        self.params = xopt
+        self.params = np.hstack(xopt )
         #self.paramsconv = np.hstack([ xopt[0], xy2angle(xopt[1:3]), xopt[3] ])
 
 # Plotting functions
@@ -469,7 +558,8 @@ toyconv = insert_ones_col( toydata )
 toy1 = toyconv[:,[0,2,3]]
 
 def compare_fits( fns ):
-    models = [onedfit, twodfit, onedfit_alpha, twodfit_alpha ]
+    models = [onedfit, twodfit, onedfit_alpha, twodfit_alpha, onedfit_fisher, twodfit_fisher ]
+    modelnames = ["onedfit", "twodfit", "onedfit_alpha", "twodfit_alpha", "onedfit_fisher", "twodfit_fisher" ]
     results = {}
     for fn in fns:
         data = np.loadtxt( os.popen("sed 's/ch//g' %s |  awk NF==10 | \
@@ -480,9 +570,11 @@ def compare_fits( fns ):
     for fn in fns:
         print fn
         print [ fit.negloglike for fit in results[fn] ]
-        for fit in results[fn]:
+        for modelname, fit in zip( modelnames, results[fn] ):
+            print modelname
             print "params: ", fit.params
-            print "2d var should be: ", var_from_b( fit.params[1:3], fit.data )
+            if 'twod' in modelname:
+                print "2d var should be: ", var_from_b( fit.params[1:3], data )
             print "negloglike: ", fit.negloglike
             print "bic: ", fit.bic
             print "dim: ", fit.dim
