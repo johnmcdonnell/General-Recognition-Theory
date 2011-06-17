@@ -16,14 +16,18 @@ sometimes the fits it provides are qualitatively different from the true fits,
 as when a fit constrained to use only one stimuus dimension appears to be a
 much worse fit than one that is allowed to use two stimulus dimensions when in
 fact a fit on one dimension can be found that is nearly as good as the fit on
-two dimensions.
+two dimensions. I'm working on understanding very precisely why this seems to
+be the case, but until I do I would not recommend that anyone use the
+optimization method provided by this code unedited.
 
 Copyright
 ---------
 Most of the files in this folder are due to Leola Alfonso-Reese. Copyright and
-restrictions are described in the ``GRT_README.m`` file.
+restrictions are described in the ``GRT_README.m`` file. You should assume that
+all Matlab files have copyright held by Alfonso-Reese and are made available
+under the terms in her GRT_README.m file.
 
-If you are a copyright holder of any material on this sight and are displeased
+If you are a copyright holder of any material on this site and are displeased
 with the attribution provided here or wish that any material be taken down,
 please contact me and I will fulfill your request as quickly as possible.
 
