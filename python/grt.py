@@ -20,13 +20,12 @@ ZLIMIT = 7  # z-scores past this value will be truncated.
 def angle2xy(anglevec):
     """
     For a vector of angles, finds their x/y location on a unit circle.
-    *** warning, either this or xy2angle may have a problem. ***
     """
     return np.cos(anglevec), np.sin(anglevec)
 
 def xy2angle(xyvec):
     """
-    For a vector of x/y coordinates, finds their theta (in polar coords).
+    For a unit vector of x/y coordinates, finds their theta (in polar coords).
     """
     if xyvec[1] > 0:
         return np.arccos( xyvec[0] )
@@ -55,6 +54,16 @@ def findindices(data):
     aindices = data[:,-1] == respset[0]
     bindices = data[:,-1] == respset[1]
     return aindices, bindices
+
+def truncate_zscores( zscores, z_limit=7 ):
+    """
+    Takes a list of z_scores and removes the extreme values *in place*.
+    """
+    for i in xrange(len(zscores)):
+        if zscores[i] < -z_limit:
+            zscores[i] = -z_limit
+        elif zscores[i] > z_limit:
+            zscores[i] = z_limit
 
 ##################################################
 ## Statistical functions
@@ -133,12 +142,8 @@ def negloglike_glc( params, data, z_limit=7 ):
     mu_hx = np.inner( params[1:-1], data[:,:-1] ) + params[-1]
     zscores = mu_hx / np.sqrt( params[0] )
     
-    # Truncate extreme z-scores
-    for i in xrange(len(zscores)):
-        if zscores[i] < -z_limit:
-            zscores[i] = -z_limit
-        elif zscores[i] > z_limit:
-            zscores[i] = z_limit
+    # Truncate extreme z-scores (this function is in place)
+    truncate_zscores( zscores, z_limit )
     
     aindices, bindices = findindices( data )
     
@@ -152,13 +157,14 @@ def negloglike_reduced( params, data, z_limit=7, a=None ):
     params = np.array( params )
     dims = len(data[0])-1
     
-    if dims==2:
+    if dims==2 and len(params) == 3:
         # Convert param[1] from angle to a1/a2 notation in 2d case.
         params = np.hstack([params[0], angle2xy( params[1] ), params[-1]])
-    elif dims==1:
+    elif dims==1 and a:
         # a param fixed in the 1d case
         params = np.hstack([ params[0], a, params[1] ])
-    else:
+    
+    if dims==3:
         raise Exception, "More than 2 dimensions not yet supported."
     #sigma = np.sqrt( var_from_b( z_coefs[:-1], data[:,:-1] ) )
     return negloglike_glc( params, data, z_limit )
@@ -203,7 +209,7 @@ def negloglike_alpha( alpha, data, z_limit=7 ):
     detail in Fukunaga(1990).
     """
     b, c0 = get_params_from_alpha( alpha, data )
-    variance_hx = np.sqrt( np.inner( np.inner( b.T, np.cov(data[:,:-1].T) ), b ) )
+    variance_hx = np.inner( np.inner( b.T, np.cov(data[:,:-1].T) ), b )
     
     return negloglike_glc( np.hstack([ variance_hx, b, c0 ]), data, z_limit )
 
@@ -214,48 +220,39 @@ def fit_GLC_alpha( subjdata ):
                                                    , full_output=True )
     b, c0 = get_params_from_alpha( xopt, subjdata )
     sigmasq = var_from_b( b, subjdata )
-    alpha_params = np.hstack( sigmasq, b, c0 )
+    alpha_params = np.hstack([ sigmasq, b, c0 ])
     return xopt, fval, alpha_params 
 
 def fit_GLC_allparams( subjdata, inparams, z_limit=ZLIMIT ):
+    """
+    b (inparams[2:-1]) is general case. (Alfonso-Reese method requires unit vector)
+    """
     #thesedata=subjdata
     dims = len(subjdata[0]) - 1
     
-    likfun = negloglike_reduced
     if dims == 2:
-        if len( inparams ) == 4:
-            x0 = [inparams[0], xy2angle(inparams[1:3]), inparams[-1]]
-        elif len( inparams ) == 3:
-            x0 = inparams
-        else:
-            raise Exception, "Wrong number of parameters."
+        x0 = inparams
         #bounds = [(.00001,np.inf), (-np.inf,np.inf),(-np.inf,np.inf)]
         optargs = (subjdata, z_limit)
     elif dims==1:
         if len( inparams ) != 3:
             raise Exception, "1d fit needs 3 starting params."
-        if np.abs(inparams[1]) == 1:
-            angleparam = inparams[1]
-            x0 = inparams[[0,2]]
-        else:
-            x0 = inparams
-            angleparam = None
-            likfun = negloglike_glc
+        x0 = inparams
+        likfun = negloglike_glc
         #bounds = [(.00001,np.inf), (-np.inf,np.inf)]
         print "init: ", inparams
         print "running with x0 = ", x0
         
-        optargs = ( subjdata, z_limit, angleparam )
+        optargs = ( subjdata, z_limit )
     
     else:
         raise Exception, "More than 2 dims not yet supported."
     
-    xopt, fopt, iter, im, sm = optimize.fmin( func=likfun
+    xopt, fopt, iter, im, sm = optimize.fmin( func=negloglike_glc
                                             , x0 = x0 
                                             , args = optargs
                                             , full_output=True
                                             )
-    
     
     if dims==1 and angleparam:
         xopt =  np.hstack([xopt[0], angleparam, xopt[1]])
@@ -393,6 +390,7 @@ class onedfit( modelfit ):
             # Optimize using the one-parameter optimization method.
             alpha, foptalpha, alpha_params = fit_GLC_alpha( self.data )
             
+            negglc = negloglike_glc( alpha_params, self.data )
             assert negloglike_glc( alpha_params, self.data ) == foptalpha
             
             # Minimize using hill climbing from that point:
@@ -400,7 +398,7 @@ class onedfit( modelfit ):
             xopt, fopt = fit_GLC_allparams( self.data, alpha_params  )
             print "Sigma^2 inaccuracy: ", xopt[0] - var_from_b( xopt[1:-1], self.data )
             print "Alpha negloglike: ", negloglike_glc( alpha_params, self.data )
-            assert fopt < foptalpha
+            assert fopt < foptalpha, "%f, %f" % (fopt, foptalpha)
             
             logliks.append( fopt )
             params.append( xopt )
@@ -434,10 +432,7 @@ class twodfit( modelfit ):
     
     def calcnegloglike( self ):
         # Fit using the Ashby method on one parameter (alpha)
-        alpha, foptalpha = fit_GLC_alpha( self.data )
-        alpha_params = np.hstack( get_params_from_alpha( alpha, self.data ) ) 
-        sigma_init = var_from_b( alpha_params[:-1], self.data )
-        alpha_params = np.hstack( [[sigma_init], alpha_params] )
+        alpha, foptalpha, alpha_params = fit_GLC_alpha( self.data )
         
         # Minimize using hill climbing from that point:
         xopt, fopt = fit_GLC_allparams( self.data, alpha_params  )
